@@ -1,0 +1,16 @@
+Gender,Heart Sound Type,Lung Sound Type,Location,Heart Sound ID,Lung Sound ID,Mixed Sound ID
+F,Atrial Fibrillation,Normal,LMA,H0046,L0046,M0046
+M,Late Diastolic Murmur,Normal,RUSB,H0145,L0145,M0145
+M,S4,Fine Crackles,LC,H0131,L0131,M0131
+F,S3,Coarse Crackles,RC,H0017,L0017,M0017
+M,S4,Pleural Rub,Apex,H0064,L0064,M0064
+F,Late Diastolic Murmur,Rhonchi,LUA,H0014,L0014,M0014
+M,S3,Wheezing,LUA,H0132,L0132,M0132
+M,Mid Systolic Murmur,Pleural Rub,LMA,H0073,L0073,M0073
+M,AV Block,Fine Crackles,RUSB,H0005,L0005,M0005
+F,Late Systolic Murmur,Fine Crackles,LUA,H0082,L0082,M0082
+M,Mid Systolic Murmur,Wheezing,LC,H0089,L0089,M0089
+M,S3,Normal,LUA,H0036,L0036,M0036
+M,Normal,Rhonchi,LUA,H0096,L0096,M0096
+M,Mid Systolic Murmur,Wheezing,LUA,H0009,L0009,M0009
+F,Late Systolic Murmur,Rhonchi,LUSB,H0001,L0001,M0001
