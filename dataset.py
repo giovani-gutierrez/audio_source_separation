@@ -1,1 +1,172 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"pygments_lexer":"ipython3","nbconvert_exporter":"python","version":"3.6.4","file_extension":".py","codemirror_mode":{"name":"ipython","version":3},"name":"python","mimetype":"text/x-python"},"kaggle":{"accelerator":"none","dataSources":[],"dockerImageVersionId":31259,"isInternetEnabled":true,"language":"python","sourceType":"script","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"from pathlib import Path\nimport numpy as np\nimport pandas as pd\nimport torch\nfrom torch.utils.data import Dataset, DataLoader\nimport torchaudio\nimport torchaudio.functional as F\n\nclass AudioDataset(Dataset):\n    \"\"\"\n    PyTorch Dataset for audio source separation of heart and lung sounds.\n    \n    This dataset creates mixed audio samples by combining heart sounds and lung sounds\n    from different recordings. It handles audio loading, resampling, normalization,\n    and mixing with random signal-to-noise (SNR) ratios for robust model training.\n    \n    Args:\n        metadata_file (str): Path to CSV file containing audio metadata with columns\n            'Heart Sound ID' and 'Lung Sound ID'.\n        audio_dir (str): Directory path containing audio files in WAV format.\n        samples_per_epoch (int): Number of samples to generate per epoch (controls\n            dataset length).\n        target_sample_rate (int, optional): Target sampling rate in Hz for all audio.\n            Defaults to 16000.\n        num_samples (int, optional): Number of audio samples (time steps) per clip.\n            Defaults to 80000 (5 seconds at 16kHz).\n        deterministic (bool, optional): If True, uses index-based seeding for\n            reproducible validation sets. Defaults to False.\n        eps (float, optional): Small constant for numerical stability in normalization.\n            Defaults to 1e-8.\n    \n    Returns:\n        dict: Dictionary containing:\n            - mixture: Mixed audio signal (heart + lung)\n            - target_heart: Isolated heart sound component\n            - target_lung: Isolated lung sound component\n            - scaling_factor: Maximum value used for final normalization\n            - ids: List of [heart_sound_id, lung_sound_id]\n    \"\"\"\n    \n    def __init__(\n        self, \n        metadata_file,\n        audio_dir,\n        samples_per_epoch,\n        target_sample_rate=16000,\n        num_samples=80000,\n        deterministic=False,\n        eps=1e-8\n    ):\n        # Load metadata containing audio file IDs\n        self.metadata = pd.read_csv(metadata_file)\n        \n        # Convert audio directory to Path object for robust file handling\n        self.audio_dir = Path(audio_dir)\n        \n        # Number of samples to generate per epoch (dataset length)\n        self.samples_per_epoch = samples_per_epoch\n        \n        # Target sampling rate for all audio (Hz)\n        self.target_sample_rate = target_sample_rate\n        \n        # Number of time samples per audio clip\n        self.num_samples = num_samples\n        \n        # Whether to use deterministic sampling for validation\n        self.deterministic = deterministic\n        \n        # Small epsilon for numerical stability\n        self.eps = eps\n    \n    def __len__(self):\n        \"\"\"\n        Returns the number of samples in an epoch.\n        \n        Returns:\n            int: Number of samples per epoch.\n        \"\"\"\n        return self.samples_per_epoch\n    \n    def __getitem__(self, idx):\n        \"\"\"\n        Generates a single mixed audio sample with heart and lung sound components.\n        \n        This method:\n        1. Selects a heart sound based on the index\n        2. Randomly selects a different lung sound\n        3. Loads and preprocesses both audio files (resample, mix to mono)\n        4. Applies random cropping if signals are longer than num_samples\n        5. Normalizes each signal to unit energy\n        6. Applies random SNR mixing\n        7. Combines signals and applies final scaling\n        \n        Args:\n            idx (int): Index of the sample to retrieve.\n        \n        Returns:\n            dict: Dictionary containing mixed and separated audio components plus metadata.\n        \"\"\"\n        # Set random seed based on index for deterministic validation sets\n        if self.deterministic:\n            np.random.seed(idx)\n        \n        # Cycle through metadata indices to ensure all samples are used\n        idx = idx % len(self.metadata)\n        \n        # Get heart sound ID from metadata at the current index\n        hs_id = self.metadata.loc[idx, 'Heart Sound ID']\n        \n        # Select a random lung sound ID that is different from the heart sound index\n        possible_indices = torch.arange(len(self.metadata))  # All possible indices\n        mask = torch.ones(possible_indices.size(0), dtype=torch.bool)  # Create boolean mask\n        mask[idx] = False  # Exclude current index to ensure different sounds\n        possible_indices = possible_indices[mask]  # Filter to valid indices\n        lung_idx = np.random.choice(possible_indices)  # Randomly select lung sound index\n        ls_id = self.metadata.loc[lung_idx, 'Lung Sound ID']  # Get lung sound ID\n        \n        # Load audio files and their original sampling rates\n        heart_signal, heart_sr = torchaudio.load(self.audio_dir / f'{hs_id}.wav')\n        lung_signal, lung_sr = torchaudio.load(self.audio_dir / f'{ls_id}.wav')\n        \n        # Resample heart signal to target sample rate if necessary\n        if heart_sr != self.target_sample_rate:\n            heart_signal = F.resample(heart_signal, heart_sr, self.target_sample_rate)\n        \n        # Resample lung signal to target sample rate if necessary\n        if lung_sr != self.target_sample_rate:\n            lung_signal = F.resample(lung_signal, lung_sr, self.target_sample_rate)\n        \n        # Convert stereo to mono by averaging channels if necessary\n        if heart_signal.size(0) > 1:\n            heart_signal = torch.mean(heart_signal, dim=0, keepdim=True)\n        \n        if lung_signal.size(0) > 1:\n            lung_signal = torch.mean(lung_signal, dim=0, keepdim=True)\n        \n        # Apply random cropping to heart signal if longer than target length\n        if heart_signal.size(1) >= self.num_samples:\n            start_idx = np.random.randint(0, heart_signal.size(1) - self.num_samples + 1)\n            heart_signal = heart_signal[:, start_idx: start_idx + self.num_samples]\n        \n        # Apply random cropping to lung signal if longer than target length\n        if lung_signal.size(1) >= self.num_samples:\n            start_idx = np.random.randint(0, lung_signal.size(1) - self.num_samples + 1)\n            lung_signal = lung_signal[:, start_idx: start_idx + self.num_samples]\n        \n        # Normalize each signal to unit energy (L2 norm = 1)\n        heart_signal /= (torch.linalg.norm(heart_signal) + self.eps)\n        lung_signal /= (torch.linalg.norm(lung_signal) + self.eps)\n        \n        # Apply random SNR (Signal-to-Noise Ratio) between -5 and 5 dB\n        snr_db = np.random.randint(-5, 5)\n        scale = 10 ** (snr_db / 20)  # Convert dB to linear scale\n        heart_signal *= scale\n        \n        # Mix the heart and lung signals\n        mixed_signal = heart_signal + lung_signal\n        \n        # Scale all signals to prevent clipping (normalize by max absolute value)\n        max_val = torch.abs(mixed_signal).max()\n        mixed_signal /= max_val\n        heart_signal /= max_val\n        lung_signal /= max_val\n        \n        # Return dictionary with all components\n        return {\n            'mixture': mixed_signal, # Mixed audio (heart + lung)\n            'target_heart': heart_signal, # Isolated heart sound\n            'target_lung': lung_signal, # Isolated lung sound\n            'scaling_factor': max_val, # Scaling factor for potential reconstruction\n            'ids': [hs_id, ls_id] # Original audio IDs for tracking\n        }","metadata":{"_uuid":"a073fca3-efd2-4f48-ab50-5ee8237240f9","_cell_guid":"1a58cca9-5be0-4b4c-843d-3406ff7ae588","trusted":true,"collapsed":false,"jupyter":{"outputs_hidden":false}},"outputs":[],"execution_count":null}]}
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset, DataLoader
+import torchaudio
+import torchaudio.functional as F
+
+class AudioDataset(Dataset):
+    """
+    PyTorch Dataset for audio source separation of heart and lung sounds.
+    
+    This dataset creates mixed audio samples by combining heart sounds and lung sounds
+    from different recordings. It handles audio loading, resampling, normalization,
+    and mixing with random signal-to-noise (SNR) ratios for robust model training.
+    
+    Args:
+        metadata_file (str): Path to CSV file containing audio metadata with columns
+            'Heart Sound ID' and 'Lung Sound ID'.
+        audio_dir (str): Directory path containing audio files in WAV format.
+        samples_per_epoch (int): Number of samples to generate per epoch (controls
+            dataset length).
+        target_sample_rate (int, optional): Target sampling rate in Hz for all audio.
+            Defaults to 16000.
+        num_samples (int, optional): Number of audio samples (time steps) per clip.
+            Defaults to 80000 (5 seconds at 16kHz).
+        deterministic (bool, optional): If True, uses index-based seeding for
+            reproducible validation sets. Defaults to False.
+        eps (float, optional): Small constant for numerical stability in normalization.
+            Defaults to 1e-8.
+    
+    Returns:
+        dict: Dictionary containing:
+            - mixture: Mixed audio signal (heart + lung)
+            - target_heart: Isolated heart sound component
+            - target_lung: Isolated lung sound component
+            - scaling_factor: Maximum value used for final normalization
+            - ids: List of [heart_sound_id, lung_sound_id]
+    """
+    
+    def __init__(
+        self, 
+        metadata_file,
+        audio_dir,
+        samples_per_epoch,
+        target_sample_rate=16000,
+        num_samples=80000,
+        deterministic=False,
+        eps=1e-8
+    ):
+        # Load metadata containing audio file IDs
+        self.metadata = pd.read_csv(metadata_file)
+        
+        # Convert audio directory to Path object for robust file handling
+        self.audio_dir = Path(audio_dir)
+        
+        # Number of samples to generate per epoch (dataset length)
+        self.samples_per_epoch = samples_per_epoch
+        
+        # Target sampling rate for all audio (Hz)
+        self.target_sample_rate = target_sample_rate
+        
+        # Number of time samples per audio clip
+        self.num_samples = num_samples
+        
+        # Whether to use deterministic sampling for validation
+        self.deterministic = deterministic
+        
+        # Small epsilon for numerical stability
+        self.eps = eps
+    
+    def __len__(self):
+        """
+        Returns the number of samples in an epoch.
+        
+        Returns:
+            int: Number of samples per epoch.
+        """
+        return self.samples_per_epoch
+    
+    def __getitem__(self, idx):
+        """
+        Generates a single mixed audio sample with heart and lung sound components.
+        
+        This method:
+        1. Selects a heart sound based on the index
+        2. Randomly selects a different lung sound
+        3. Loads and preprocesses both audio files (resample, mix to mono)
+        4. Applies random cropping if signals are longer than num_samples
+        5. Normalizes each signal to unit energy
+        6. Applies random SNR mixing
+        7. Combines signals and applies final scaling
+        
+        Args:
+            idx (int): Index of the sample to retrieve.
+        
+        Returns:
+            dict: Dictionary containing mixed and separated audio components plus metadata.
+        """
+        # Set random seed based on index for deterministic validation sets
+        if self.deterministic:
+            np.random.seed(idx)
+        
+        # Cycle through metadata indices to ensure all samples are used
+        idx = idx % len(self.metadata)
+        
+        # Get heart sound ID from metadata at the current index
+        hs_id = self.metadata.loc[idx, 'Heart Sound ID']
+        
+        # Select a random lung sound ID that is different from the heart sound index
+        possible_indices = torch.arange(len(self.metadata))  # All possible indices
+        mask = torch.ones(possible_indices.size(0), dtype=torch.bool)  # Create boolean mask
+        mask[idx] = False  # Exclude current index to ensure different sounds
+        possible_indices = possible_indices[mask]  # Filter to valid indices
+        lung_idx = np.random.choice(possible_indices)  # Randomly select lung sound index
+        ls_id = self.metadata.loc[lung_idx, 'Lung Sound ID']  # Get lung sound ID
+        
+        # Load audio files and their original sampling rates
+        heart_signal, heart_sr = torchaudio.load(self.audio_dir / f'{hs_id}.wav')
+        lung_signal, lung_sr = torchaudio.load(self.audio_dir / f'{ls_id}.wav')
+        
+        # Resample heart signal to target sample rate if necessary
+        if heart_sr != self.target_sample_rate:
+            heart_signal = F.resample(heart_signal, heart_sr, self.target_sample_rate)
+        
+        # Resample lung signal to target sample rate if necessary
+        if lung_sr != self.target_sample_rate:
+            lung_signal = F.resample(lung_signal, lung_sr, self.target_sample_rate)
+        
+        # Convert stereo to mono by averaging channels if necessary
+        if heart_signal.size(0) > 1:
+            heart_signal = torch.mean(heart_signal, dim=0, keepdim=True)
+        
+        if lung_signal.size(0) > 1:
+            lung_signal = torch.mean(lung_signal, dim=0, keepdim=True)
+        
+        # Apply random cropping to heart signal if longer than target length
+        if heart_signal.size(1) >= self.num_samples:
+            start_idx = np.random.randint(0, heart_signal.size(1) - self.num_samples + 1)
+            heart_signal = heart_signal[:, start_idx: start_idx + self.num_samples]
+        
+        # Apply random cropping to lung signal if longer than target length
+        if lung_signal.size(1) >= self.num_samples:
+            start_idx = np.random.randint(0, lung_signal.size(1) - self.num_samples + 1)
+            lung_signal = lung_signal[:, start_idx: start_idx + self.num_samples]
+        
+        # Normalize each signal to unit energy (L2 norm = 1)
+        heart_signal /= (torch.linalg.norm(heart_signal) + self.eps)
+        lung_signal /= (torch.linalg.norm(lung_signal) + self.eps)
+        
+        # Apply random SNR (Signal-to-Noise Ratio) between -5 and 5 dB
+        snr_db = np.random.randint(-5, 5)
+        scale = 10 ** (snr_db / 20)  # Convert dB to linear scale
+        heart_signal *= scale
+        
+        # Mix the heart and lung signals
+        mixed_signal = heart_signal + lung_signal
+        
+        # Scale all signals to prevent clipping (normalize by max absolute value)
+        max_val = torch.abs(mixed_signal).max()
+        mixed_signal /= max_val
+        heart_signal /= max_val
+        lung_signal /= max_val
+        
+        # Return dictionary with all components
+        return {
+            'mixture': mixed_signal, # Mixed audio (heart + lung)
+            'target_heart': heart_signal, # Isolated heart sound
+            'target_lung': lung_signal, # Isolated lung sound
+            'scaling_factor': max_val, # Scaling factor for potential reconstruction
+            'ids': [hs_id, ls_id] # Original audio IDs for tracking
+        }
