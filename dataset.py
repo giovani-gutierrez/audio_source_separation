@@ -1,3 +1,4 @@
+# imports
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -115,7 +116,7 @@ class AudioDataset(Dataset):
         lung_idx = np.random.choice(possible_indices)  # Randomly select lung sound index
         ls_id = self.metadata.loc[lung_idx, 'Lung Sound ID']  # Get lung sound ID
         
-        # Load audio files and their original sampling rates
+        # Load audio files
         heart_signal, heart_sr = torchaudio.load(self.audio_dir / f'{hs_id}.wav')
         lung_signal, lung_sr = torchaudio.load(self.audio_dir / f'{ls_id}.wav')
         
@@ -143,13 +144,17 @@ class AudioDataset(Dataset):
         if lung_signal.size(1) >= self.num_samples:
             start_idx = np.random.randint(0, lung_signal.size(1) - self.num_samples + 1)
             lung_signal = lung_signal[:, start_idx: start_idx + self.num_samples]
+
+        # Save signals before normalization for listening during evaluation
+        orig_hs = heart_signal
+        orig_ls = lung_signal
         
         # Normalize each signal to unit energy (L2 norm = 1)
         heart_signal /= (torch.linalg.norm(heart_signal) + self.eps)
         lung_signal /= (torch.linalg.norm(lung_signal) + self.eps)
         
-        # Apply random SNR (Signal-to-Noise Ratio) between -5 and 5 dB
-        snr_db = np.random.randint(-5, 5)
+        # Apply random SNR (Signal-to-Noise Ratio) uniformy sampled from [-5, 5) dB
+        snr_db = np.random.uniform(-5, 5)
         scale = 10 ** (snr_db / 20)  # Convert dB to linear scale
         heart_signal *= scale
         
@@ -167,6 +172,7 @@ class AudioDataset(Dataset):
             'mixture': mixed_signal, # Mixed audio (heart + lung)
             'target_heart': heart_signal, # Isolated heart sound
             'target_lung': lung_signal, # Isolated lung sound
-            'scaling_factor': max_val, # Scaling factor for potential reconstruction
+            'prenorm_hs': orig_hs,
+            'prenorm_ls': orig_ls,
             'ids': [hs_id, ls_id] # Original audio IDs for tracking
         }
