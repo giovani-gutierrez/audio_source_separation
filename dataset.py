@@ -144,10 +144,6 @@ class AudioDataset(Dataset):
         if lung_signal.size(1) >= self.num_samples:
             start_idx = np.random.randint(0, lung_signal.size(1) - self.num_samples + 1)
             lung_signal = lung_signal[:, start_idx: start_idx + self.num_samples]
-
-        # Save signals before normalization for listening during evaluation
-        orig_hs = heart_signal
-        orig_ls = lung_signal
         
         # Normalize each signal to unit energy (L2 norm = 1)
         heart_signal /= (torch.linalg.norm(heart_signal) + self.eps)
@@ -172,7 +168,5 @@ class AudioDataset(Dataset):
             'mixture': mixed_signal, # Mixed audio (heart + lung)
             'target_heart': heart_signal, # Isolated heart sound
             'target_lung': lung_signal, # Isolated lung sound
-            'prenorm_hs': orig_hs,
-            'prenorm_ls': orig_ls,
             'ids': [hs_id, ls_id] # Original audio IDs for tracking
         }
