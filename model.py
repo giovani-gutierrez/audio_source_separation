@@ -1,3 +1,4 @@
+# %% [code]
 import numpy as np
 import torch
 import torch.nn as nn
@@ -24,7 +25,6 @@ class TemporalBlock(nn.Module):
         super().__init__()
 
         # Pointwise convolution (1x1): Projects input to higher dimensional space (H)
-        # This increases the capacity of the network to learn complex features.
         self.pw_conv = nn.Conv1d(in_channels, out_channels, kernel_size = 1)
 
         # Depthwise convolution: Spatial (temporal) filtering
@@ -46,15 +46,15 @@ class TemporalBlock(nn.Module):
         # Normalization and Activation
         # Conv-TasNet uses Global Layer Norm (gLN) or Cumulative Layer Norm (cLN).
         # Here we use GroupNorm(1, ...) which is equivalent to LayerNorm in PyTorch for 1D data.
-        self.prelu1 = nn.PReLU()
+        self.gelu1 = nn.GELU()
         self.norm1 = nn.GroupNorm(num_groups = 1, num_channels = out_channels)
-        self.prelu2 = nn.PReLU()
+        self.gelu2 = nn.GELU()
         self.norm2 = nn.GroupNorm(num_groups = 1, num_channels = out_channels)
 
         # Dropout
         self.dropout = nn.Dropout(p = dropout)
         
-        # Initialize zero bias
+        # Apply weight initialization
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -74,11 +74,11 @@ class TemporalBlock(nn.Module):
         """
         # Expand channels: (Batch, B, L) -> (Batch, H, L)
         x_hat = self.pw_conv(x)
-        x_hat = self.norm1(self.prelu1(x_hat))
+        x_hat = self.norm1(self.gelu1(x_hat))
 
         # Apply dilated depthwise convolution: (Batch, H, L) -> (Batch, H, L)
         x_hat = self.d_conv(x_hat)
-        x_hat = self.norm2(self.prelu2(x_hat))
+        x_hat = self.norm2(self.gelu2(x_hat))
 
         # Apply dropout
         x_hat = self.dropout(x_hat)
@@ -195,7 +195,7 @@ class ConvTasNet(nn.Module):
         # Mask Generation
         # Projects the accumulated skip connections back to the encoder dimension (N).
         # We output (N * 2) channels to create 2 distinct masks (one per speaker).
-        self.prelu = nn.PReLU()
+        self.gelu = nn.GELU()
         self.mask_conv = nn.Conv1d(Sc, N * 2, 1)
         self.sigmoid = nn.Sigmoid()
 
@@ -227,7 +227,7 @@ class ConvTasNet(nn.Module):
         
         # Generate masks
         # Shape: (Batch, Sc, L_frames) -> (Batch, N*2, L_frames)
-        masks = self.mask_conv(self.prelu(skip_sum)) 
+        masks = self.mask_conv(self.gelu(skip_sum)) 
         
         # Reshape to isolate speakers: (Batch, N*C, L) -> (Batch, C, N, L)
         # This splits the big channel dimension into [Number of Speakers] x [Embedding Dim]
