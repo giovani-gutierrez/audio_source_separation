@@ -12,7 +12,7 @@ class TemporalBlock(nn.Module):
     the receptive field without significantly increasing computational cost.
     
     Structure:
-        [1x1-conv] -> [PReLU/Norm] -> [D-Conv] -> [PReLU/Norm] -> [1x1-convs]
+        [1x1-conv] -> [GELU/Norm] -> [D-Conv] -> [GELU/Norm] -> [1x1-convs]
     
     Args:
         in_channels (int): Number of input channels (typically B).
@@ -53,15 +53,6 @@ class TemporalBlock(nn.Module):
 
         # Dropout
         self.dropout = nn.Dropout(p = dropout)
-        
-        # Apply weight initialization
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        """Initializes biases to zero for convolutional layers."""
-        if isinstance(module, nn.Conv1d):
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
                 
     def forward(self, x):
         """
@@ -179,7 +170,7 @@ class ConvTasNet(nn.Module):
             out_channels=N,
             kernel_size=L,
             stride=L // 2,
-            bias=False
+            bias = False
         )
 
         # Bottleneck
@@ -202,8 +193,18 @@ class ConvTasNet(nn.Module):
         # Decoder
         # Acts like a learnable Inverse STFT.
         # Transposed convolution reconstructs the waveform from the masked features.
-        self.decoder = nn.ConvTranspose1d(N, 1, L, stride=L//2, bias=False)
+        self.decoder = nn.ConvTranspose1d(N, 1, L, stride=L//2, bias = False)
 
+        self.apply(self._init_weights)
+        torch.nn.init.xavier_normal_(self.mask_conv.weight)
+        torch.nn.init.xavier_normal_(self.decoder.weight)
+        
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Conv1d, nn.ConvTranspose1d)):
+            torch.nn.init.kaiming_normal_(module.weight, nonlinearity = 'relu')
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+                
     def forward(self, x):
         """
         Forward pass for source separation.
